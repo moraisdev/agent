@@ -20,7 +20,12 @@ Agente de inteligencia de negocios no WhatsApp. Usa Claude Code como agente nati
                          └──────┬──────┘
                                 │ auto-spawn
                          ┌──────┴──────┐
-                         │ Claude Code  │  Le o inbox, entende a mensagem
+                         │ Genie Daemon │  Poll nex.json a cada 2s
+                         │ (bin/genie)  │  Chama `claude -p` por mensagem
+                         └──────┬──────┘
+                                │ stdin → claude -p
+                         ┌──────┴──────┐
+                         │ Claude Code  │  Entende a mensagem
                          │ (agente)     │  Decide se precisa de dados ou nao
                          └──────┬──────┘
                                 │ MCP Protocol (tool_use)
@@ -28,11 +33,11 @@ Agente de inteligencia de negocios no WhatsApp. Usa Claude Code como agente nati
                          │ MCP Server   │  FastMCP (Python) — porta 8000
                          │ 9 tools      │  Conecta no PostgreSQL
                          │ PostgreSQL   │  Retorna dados reais
-                         └──────┬──────┘
-                                │ resposta
+                         └──────┴──────┘
+                                │ stdout
                          ┌──────┴──────┐
-                         │ Claude Code  │  Formata resposta natural
-                         │ SendMessage  │  Escreve no inbox do Omni
+                         │ Genie Daemon │  Limpa headers, monta routing
+                         │              │  Escreve no inbox do Omni
                          └──────┬──────┘
                                 │ inbox-bridge (poll a cada 2s)
                          ┌──────┴──────┐
@@ -256,7 +261,8 @@ ls ~/.claude/teams/namastex-*
      "read": false
    }
 
-4. Genie auto-spawna Claude Code no diretorio do projeto
+4. Genie daemon detecta mensagem nova (poll a cada 2s)
+   → Chama `claude -p` passando a mensagem via stdin
    → Claude Code le .claude/CLAUDE.md (sabe que e o Nex)
    → Claude Code le .mcp.json (descobre 9 tools em localhost:8000)
 
@@ -265,8 +271,9 @@ ls ~/.claude/teams/namastex-*
    → MCP Server consulta PostgreSQL
    → Retorna: vendas, financeiro, clientes, anomalias, comparacoes
 
-6. Claude Code formata resposta natural em pt-BR
-   → Responde via SendMessage ao "omni" com header de roteamento
+6. Genie daemon recebe a resposta do Claude
+   → Limpa headers duplicados, monta routing header
+   → Escreve no inbox do omni (omni.json)
 
 7. inbox-bridge (Omni) detecta nova mensagem no inbox do omni
    → Parseia header [channel:whatsapp instance:uuid chat:5511999]
@@ -345,3 +352,53 @@ make clean       # Parar + deletar volumes
 - **Memoria cross-session**: O MCP server persiste preferencias, historico de relatorios e baselines EMA no PostgreSQL. Isso permite deteccao de anomalias e comparacao entre periodos.
 
 - **Pipeline ReSpAct**: A geracao de relatorio segue um pipeline gather → analyze → format com possibilidade de re-gather se os dados estiverem incompletos.
+
+## Gambiarra
+
+### O Problema
+
+O Omni espera um CLI chamado `genie` no PATH pra spawnar sessoes do Claude Code que monitoram as team inboxes. Esse `genie` nao existe como ferramenta publica e um componente interno que nunca foi distribuido separadamente.
+
+Sem ele, o fluxo quebra exatamente aqui:
+
+```
+WhatsApp → Omni → escreve em nex.json → ??? → ninguem le → ninguem responde
+```
+
+As mensagens chegavam no arquivo `~/.claude/teams/namastex-{chat_id}/inboxes/nex.json` certinho, marcadas como `read: false`, mas nenhum agente existia pra consumi-las. O `inbox-bridge` do Omni ficava rodando sem nada pra fazer porque ninguem escrevia respostas no `omni.json`.
+
+### A Solucao
+
+Criei `omni/bin/genie` um daemon Python que faz o papel do genie original:
+
+1. **Spawn via tmux**: O Omni chama `genie spawn team-lead --team <name> --cwd <dir>`, o script cria uma sessao tmux com o daemon
+2. **Poll da inbox**: A cada 2 segundos, le `nex.json` e procura mensagens com `read: false`
+3. **Chama `claude -p`**: Passa a mensagem via stdin pro Claude Code em modo print, no diretorio do projeto (onde estao `.claude/CLAUDE.md` e `.mcp.json`)
+4. **Limpa a resposta**: Remove headers de roteamento que o Claude pode ecoar na resposta
+5. **Escreve no `omni.json`**: Monta a mensagem com o routing header correto, o inbox-bridge do Omni pega e envia de volta ao WhatsApp
+6. **Idempotente**: Se a sessao tmux ja existe, retorna sem fazer nada
+
+O link simbolico fica em `~/.local/bin/genie` pra estar no PATH.
+
+### Limitacoes
+
+- **Sem historico de conversa em memoria**: Cada mensagem e processada por uma invocacao separada de `claude -p`, entao o Claude nao lembra o que foi dito antes na mesma sessao. Porem, preferencias do usuario, historico de relatorios e baselines sao persistidos no PostgreSQL via MCP tools (`get_user_context`, `save_user_preference`, `get_report_history`).
+- **Latencia**: Cada resposta leva ~20-30s porque spawna um processo Claude Code novo por mensagem.
+- **Depende de tmux**: O daemon roda em sessao tmux. Se o tmux morrer, para de responder.
+- **Um daemon por chat**: Cada chat_id gera uma team separada e potencialmente um daemon separado.
+
+### Pra rodar manualmente
+
+```bash
+# Spawnar pra um chat especifico
+genie spawn team-lead --team namastex-<chat_id> --cwd /path/to/namastex
+
+# Ver logs
+tail -f /tmp/genie-namastex-<chat_id>.log
+
+# Attach no tmux
+tmux attach -t genie-namastex-<chat_id>
+
+# Matar
+tmux kill-session -t genie-namastex-<chat_id>
+```
