@@ -1,0 +1,37 @@
+services:
+  business-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: business
+      POSTGRES_USER: readonly
+      POSTGRES_PASSWORD: readonly
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./scripts/seed-demo-data.sql:/docker-entrypoint-initdb.d/seed.sql
+      - business_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U readonly -d business"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  mcp-server:
+    build: ./server
+    ports:
+      - "8000:8000"
+    environment:
+      BUSINESS_DATABASE_URI: postgresql://readonly:readonly@business-db:5432/business
+      AUTH_DEV_MODE: "true"
+      LOG_LEVEL: INFO
+    depends_on:
+      business-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/ping')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  business_data:

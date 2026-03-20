@@ -1,0 +1,15 @@
+[project]
+name = "namastex-mcp-server"
+version = "0.1.0"
+description = "Custom MCP server for Namastex report generation"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=2.0.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "loguru>=0.7.0",
+    "uvicorn>=0.34.0",
+]

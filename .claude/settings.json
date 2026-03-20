@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(omni send *)",
+      "Bash(omni instances *)",
+      "Bash(omni events *)"
+    ],
+    "deny": [
+      "Read(.env*)"
+    ]
+  }
+}
